@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         抖音粉丝自动移除
 // @namespace    Violentmonkey Scripts
-// @version      0.2.0
-// @changelog    简化控制面板为开始/暂停，固定批量处理当前可见目标并跳过相互关注，补充截图与发布文档；
+// @version      0.3.0
+// @changelog    新增悬浮窗收缩功能，支持将面板收缩为右侧居中的小球，并优化了 UI 视觉效果；
 // @description  在网页版抖音粉丝弹窗中自动移除粉丝，支持暂停、批量处理和跳过相互关注
 // @author       Frequenk
 // @license      GPL-3.0 License
@@ -21,9 +21,11 @@
     const PANEL_ID = "dy-fans-remover-panel";
     const CONTAINER_SELECTOR = '[data-e2e="user-fans-container"]';
     const FOOTER_SELECTOR = '[data-e2e="user-fans-footer"]';
+    const SELF_PATH_PREFIX = "/user/self";
     const DEFAULT_SETTINGS = {
       delayMs: 0,
-      batchSize: 5
+      batchSize: 5,
+      collapsed: false
     };
     const state = {
       running: false,
@@ -38,7 +40,8 @@
     init();
     function init() {
       injectStyle();
-      mountPanel();
+      mountPanelIfNeeded();
+      installRouteWatcher();
       window.addEventListener("beforeunload", stopLoop);
     }
     function loadSettings() {
@@ -48,8 +51,8 @@
           return { ...DEFAULT_SETTINGS };
         const parsed = JSON.parse(raw);
         return {
-          ...parsed,
-          ...DEFAULT_SETTINGS
+          ...DEFAULT_SETTINGS,
+          ...parsed
         };
       } catch (error) {
         console.warn("[\u6296\u97F3\u7C89\u4E1D\u81EA\u52A8\u79FB\u9664] \u8BFB\u53D6\u914D\u7F6E\u5931\u8D25", error);
@@ -67,33 +70,84 @@
       style.textContent = `
             #${PANEL_ID} {
                 position: fixed;
-                top: 120px;
+                top: 50%;
                 right: 24px;
+                transform: translateY(-50%);
                 z-index: 2147483647;
                 width: 280px;
-                padding: 14px;
-                border-radius: 14px;
+                padding: 16px;
+                border-radius: 16px;
                 background: rgba(22, 24, 35, 0.94);
                 color: #fff;
-                box-shadow: 0 16px 40px rgba(0, 0, 0, 0.3);
+                box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
                 font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                backdrop-filter: blur(10px);
+                backdrop-filter: blur(12px);
+                transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+                user-select: none;
+            }
+            #${PANEL_ID}.dyfr-collapsed {
+                width: 48px;
+                height: 48px;
+                padding: 0;
+                right: 12px;
+                border-radius: 24px;
+                cursor: pointer;
+                background: linear-gradient(135deg, #fe2c55, #ff6b6b);
+                box-shadow: 0 8px 24px rgba(254, 44, 85, 0.4);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                overflow: hidden;
             }
             #${PANEL_ID} * {
                 box-sizing: border-box;
             }
+            #${PANEL_ID} .dyfr-ball {
+                display: none;
+                color: #fff;
+                filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+            }
+            #${PANEL_ID}.dyfr-collapsed .dyfr-ball {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            #${PANEL_ID}.dyfr-collapsed > *:not(.dyfr-ball) {
+                display: none;
+            }
+            #${PANEL_ID} .dyfr-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 12px;
+            }
             #${PANEL_ID} .dyfr-title {
-                margin: 0 0 10px;
+                margin: 0;
                 font-size: 15px;
                 font-weight: 700;
+                background: linear-gradient(to right, #fff, rgba(255,255,255,0.7));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }
+            #${PANEL_ID} .dyfr-collapse-btn {
+                padding: 4px 8px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                cursor: pointer;
+                border-radius: 6px;
+                color: rgba(255, 255, 255, 0.5);
+                transition: all 0.2s;
+                font-size: 12px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            #${PANEL_ID} .dyfr-collapse-btn:hover {
+                background: rgba(255, 255, 255, 0.15);
+                color: #fff;
+                border-color: rgba(255, 255, 255, 0.2);
             }
             #${PANEL_ID} .dyfr-row {
-                margin-bottom: 10px;
-            }
-            #${PANEL_ID} .dyfr-label {
-                display: block;
-                margin-bottom: 6px;
-                color: rgba(255, 255, 255, 0.82);
+                margin-bottom: 12px;
             }
             #${PANEL_ID} .dyfr-actions {
                 display: flex;
@@ -101,39 +155,56 @@
             }
             #${PANEL_ID} button {
                 width: 100%;
-            }
-            #${PANEL_ID} button {
-                border: 1px solid rgba(255, 255, 255, 0.14);
+                border: 1px solid rgba(255, 255, 255, 0.1);
                 border-radius: 10px;
                 outline: none;
                 font: inherit;
                 cursor: pointer;
-                padding: 9px 12px;
+                padding: 10px 12px;
                 color: #fff;
-                background: rgba(255, 255, 255, 0.12);
+                background: rgba(255, 255, 255, 0.08);
+                transition: all 0.2s;
+            }
+            #${PANEL_ID} button:hover:not(:disabled) {
+                background: rgba(255, 255, 255, 0.15);
             }
             #${PANEL_ID} button.dyfr-primary {
                 background: linear-gradient(135deg, #fe2c55, #ff6b6b);
                 border-color: transparent;
+                font-weight: 600;
+            }
+            #${PANEL_ID} button.dyfr-primary:hover:not(:disabled) {
+                opacity: 0.9;
+                transform: translateY(-1px);
             }
             #${PANEL_ID} button:disabled {
                 cursor: not-allowed;
-                opacity: 0.55;
+                opacity: 0.4;
             }
             #${PANEL_ID} .dyfr-help {
-                margin-top: 6px;
-                color: rgba(255, 255, 255, 0.6);
+                margin-top: 8px;
+                color: rgba(255, 255, 255, 0.45);
                 font-size: 12px;
+                line-height: 1.4;
             }
             #${PANEL_ID} .dyfr-status {
-                padding: 8px 10px;
+                padding: 10px;
                 border-radius: 10px;
-                background: rgba(255, 255, 255, 0.08);
-                color: rgba(255, 255, 255, 0.88);
+                background: rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.8);
                 white-space: pre-line;
+                font-size: 12px;
+                border: 1px solid rgba(255, 255, 255, 0.03);
             }
         `;
       document.head.appendChild(style);
+    }
+    function mountPanelIfNeeded() {
+      if (!isSelfPage()) {
+        removePanel();
+        return;
+      }
+      mountPanel();
     }
     function mountPanel() {
       if (document.getElementById(PANEL_ID))
@@ -141,43 +212,85 @@
       const panel = document.createElement("div");
       panel.id = PANEL_ID;
       panel.innerHTML = `
-            <div class="dyfr-title">\u6296\u97F3\u7C89\u4E1D\u81EA\u52A8\u79FB\u9664</div>
+            <div class="dyfr-ball" title="\u5C55\u5F00\u9762\u677F">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="8.5" cy="7" r="4"></circle>
+                    <line x1="23" y1="11" x2="17" y2="11"></line>
+                </svg>
+            </div>
+            <div class="dyfr-header">
+                <div class="dyfr-title">\u7C89\u4E1D\u79FB\u9664</div>
+                <div class="dyfr-collapse-btn" data-action="collapse" title="\u6536\u8D77\u4E3A\u5C0F\u7403">\u6536\u8D77</div>
+            </div>
             <div class="dyfr-row">
                 <div class="dyfr-actions">
                     <button type="button" class="dyfr-primary" data-action="start">\u5F00\u59CB</button>
                     <button type="button" data-action="pause">\u6682\u505C</button>
                 </div>
             </div>
-            <div class="dyfr-help">\u5F53\u524D\u53EF\u89C1\u533A\u9047\u5230\u201C\u76F8\u4E92\u5173\u6CE8\u201D\u4F1A\u81EA\u52A8\u8DF3\u8FC7\uFF0C\u9700\u8981\u4F60\u624B\u52A8\u6EDA\u52A8\u628A\u5B83\u4EEC\u79FB\u51FA\u53EF\u89C1\u533A\u3002\u5E73\u53F0\u6BCF\u5929\u4E0A\u9650\u79FB\u9664 2000 \u4EBA\u3002</div>
             <div class="dyfr-status" id="${PANEL_ID}-status">\u7B49\u5F85\u5F00\u59CB</div>
+            <div class="dyfr-help">\u81EA\u52A8\u8DF3\u8FC7\u201C\u76F8\u4E92\u5173\u6CE8\u201D\u3002\u5E73\u53F0\u6BCF\u5929\u4E0A\u9650\u79FB\u9664\u7EA6 2000 \u4EBA\u3002</div>
         `;
       document.body.appendChild(panel);
       const startButton = panel.querySelector('[data-action="start"]');
       const pauseButton = panel.querySelector('[data-action="pause"]');
-      startButton.addEventListener("click", () => {
+      const collapseBtn = panel.querySelector('[data-action="collapse"]');
+      startButton.addEventListener("click", (e) => {
+        e.stopPropagation();
         state.running = true;
         setStatus("\u5DF2\u5F00\u59CB");
         renderPanel();
         scheduleNext(0);
       });
-      pauseButton.addEventListener("click", () => {
+      pauseButton.addEventListener("click", (e) => {
+        e.stopPropagation();
         stopLoop();
         setStatus("\u5DF2\u6682\u505C");
         renderPanel();
       });
+      collapseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.settings.collapsed = true;
+        saveSettings();
+        renderPanel();
+      });
+      panel.addEventListener("click", () => {
+        if (state.settings.collapsed) {
+          state.settings.collapsed = false;
+          saveSettings();
+          renderPanel();
+        }
+      });
       renderPanel();
+    }
+    function removePanel() {
+      const panel = document.getElementById(PANEL_ID);
+      if (panel) {
+        panel.remove();
+      }
+      stopLoop();
     }
     function renderPanel() {
       const panel = document.getElementById(PANEL_ID);
       if (!panel)
         return;
+      if (state.settings.collapsed) {
+        panel.classList.add("dyfr-collapsed");
+      } else {
+        panel.classList.remove("dyfr-collapsed");
+      }
       const startButton = panel.querySelector('[data-action="start"]');
       const pauseButton = panel.querySelector('[data-action="pause"]');
       const statusNode = panel.querySelector(`#${PANEL_ID}-status`);
-      startButton.disabled = state.running;
-      pauseButton.disabled = !state.running;
-      statusNode.textContent = `${state.status}
+      if (startButton)
+        startButton.disabled = state.running;
+      if (pauseButton)
+        pauseButton.disabled = !state.running;
+      if (statusNode) {
+        statusNode.textContent = `${state.status}
 \u5DF2\u79FB\u9664: ${state.processed} | \u5DF2\u8DF3\u8FC7: ${state.skipped}`;
+      }
     }
     function setStatus(message) {
       state.status = message;
@@ -194,6 +307,10 @@
     function scheduleNext(delay) {
       if (!state.running)
         return;
+      if (!isSelfPage()) {
+        removePanel();
+        return;
+      }
       if (state.timer)
         clearTimeout(state.timer);
       state.timer = setTimeout(runOnce, Math.max(0, delay));
@@ -201,6 +318,10 @@
     async function runOnce() {
       if (!state.running || state.busy)
         return;
+      if (!isSelfPage()) {
+        removePanel();
+        return;
+      }
       state.busy = true;
       try {
         const context = getActiveContext();
@@ -513,6 +634,32 @@
     function clampBatchSize(value) {
       const numeric = Number(value) || 1;
       return Math.min(5, Math.max(1, Math.round(numeric)));
+    }
+    function isSelfPage() {
+      return window.location.pathname.startsWith(SELF_PATH_PREFIX);
+    }
+    function installRouteWatcher() {
+      let lastHref = window.location.href;
+      const handleRouteChange = () => {
+        const currentHref = window.location.href;
+        if (currentHref === lastHref)
+          return;
+        lastHref = currentHref;
+        mountPanelIfNeeded();
+      };
+      const { pushState, replaceState } = window.history;
+      window.history.pushState = function(...args) {
+        const result = pushState.apply(this, args);
+        queueMicrotask(handleRouteChange);
+        return result;
+      };
+      window.history.replaceState = function(...args) {
+        const result = replaceState.apply(this, args);
+        queueMicrotask(handleRouteChange);
+        return result;
+      };
+      window.addEventListener("popstate", handleRouteChange);
+      setInterval(handleRouteChange, 1e3);
     }
     function countNewSkippedKeys(keys) {
       let count = 0;
