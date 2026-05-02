@@ -7,6 +7,7 @@
     const FOOTER_SELECTOR = '[data-e2e="user-fans-footer"]';
     const DEFAULT_SETTINGS = {
         delayMs: 0,
+        batchSize: 5,
     };
     const state = {
         running: false,
@@ -16,6 +17,7 @@
         status: '等待开始',
         processed: 0,
         skipped: 0,
+        skippedKeys: new Set(),
     };
 
     init();
@@ -30,7 +32,11 @@
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
             if (!raw) return { ...DEFAULT_SETTINGS };
-            return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+            const parsed = JSON.parse(raw);
+            return {
+                ...parsed,
+                ...DEFAULT_SETTINGS,
+            };
         } catch (error) {
             console.warn('[抖音粉丝自动移除] 读取配置失败', error);
             return { ...DEFAULT_SETTINGS };
@@ -80,8 +86,7 @@
                 display: flex;
                 gap: 8px;
             }
-            #${PANEL_ID} button,
-            #${PANEL_ID} input {
+            #${PANEL_ID} button {
                 width: 100%;
             }
             #${PANEL_ID} button {
@@ -101,20 +106,6 @@
             #${PANEL_ID} button:disabled {
                 cursor: not-allowed;
                 opacity: 0.55;
-            }
-            #${PANEL_ID} input {
-                border: 1px solid rgba(255, 255, 255, 0.14);
-                border-radius: 10px;
-                outline: none;
-                font: inherit;
-                padding: 8px 10px;
-                color: #fff;
-                background: rgba(255, 255, 255, 0.08);
-            }
-            #${PANEL_ID} input[type="number"]::-webkit-outer-spin-button,
-            #${PANEL_ID} input[type="number"]::-webkit-inner-spin-button {
-                -webkit-appearance: none;
-                margin: 0;
             }
             #${PANEL_ID} .dyfr-help {
                 margin-top: 6px;
@@ -145,20 +136,13 @@
                     <button type="button" data-action="pause">暂停</button>
                 </div>
             </div>
-            <div class="dyfr-row">
-                <label class="dyfr-label" for="${PANEL_ID}-delay">执行间隔</label>
-                <input id="${PANEL_ID}-delay" type="number" min="0" step="0.1" placeholder="0 表示立即执行">
-                <div class="dyfr-help">单位：秒。脚本会自动跳过当前可见第一项中的“相互关注”用户。</div>
-            </div>
+            <div class="dyfr-help">当前可见区遇到“相互关注”会自动跳过，需要你手动滚动把它们移出可见区。平台每天上限移除 2000 人。</div>
             <div class="dyfr-status" id="${PANEL_ID}-status">等待开始</div>
         `;
         document.body.appendChild(panel);
 
         const startButton = panel.querySelector('[data-action="start"]');
         const pauseButton = panel.querySelector('[data-action="pause"]');
-        const delayInput = panel.querySelector(`#${PANEL_ID}-delay`);
-
-        delayInput.value = String(state.settings.delayMs / 1000);
 
         startButton.addEventListener('click', () => {
             state.running = true;
@@ -171,14 +155,6 @@
             stopLoop();
             setStatus('已暂停');
             renderPanel();
-        });
-
-        delayInput.addEventListener('change', () => {
-            const seconds = Math.max(0, Number(delayInput.value) || 0);
-            state.settings.delayMs = Math.round(seconds * 1000);
-            saveSettings();
-            delayInput.value = String(seconds);
-            setStatus(`执行间隔已设置为 ${seconds} 秒`);
         });
 
         renderPanel();
@@ -229,43 +205,56 @@
                 return;
             }
 
-            const target = getFirstVisibleTarget(context);
-            if (!target) {
+            const visibleTargets = getVisibleTargets(context);
+            if (!visibleTargets.length) {
                 setStatus('当前没有可处理的粉丝项，可能已到底部');
                 scheduleNext(1000);
                 return;
             }
 
-            const name = target.name || '未知用户';
+            const visibleMutualTargets = visibleTargets.filter((target) => isMutualFollowRow(target.row));
+            if (visibleMutualTargets.length > 0) {
+                state.skipped += countNewSkippedKeys(visibleMutualTargets.map((target) => target.key).filter(Boolean));
+            }
 
-            if (isMutualFollowRow(target.row)) {
-                const moved = scrollPastRow(context.scrollContainer, target);
-                state.skipped += 1;
-                setStatus(moved ? `跳过相互关注：${name}` : `相互关注命中但无法继续滚动：${name}`);
-                scheduleNext(moved ? Math.max(120, state.settings.delayMs) : 1000);
+            const removedNames = [];
+            const batchSize = clampBatchSize(state.settings.batchSize);
+            let lastFailure = null;
+            const batchTargets = getBatchRemovableTargets(getVisibleTargets(context), batchSize);
+            if (batchTargets.length > 0) {
+                const batchResult = await removeTargetsSimultaneously(batchTargets);
+                if (batchResult.removedNames.length > 0) {
+                    removedNames.push(...batchResult.removedNames);
+                    state.processed += batchResult.removedNames.length;
+                }
+                if (!batchResult.ok && batchResult.message) {
+                    lastFailure = batchResult.message;
+                }
+            }
+
+            if (removedNames.length > 0) {
+                const mutualText = visibleMutualTargets.length > 0
+                    ? `；当前可见区已跳过 ${visibleMutualTargets.length} 个相互关注`
+                    : '';
+                setStatus(`本轮已移除 ${removedNames.length} 人：${removedNames.join('、')}${mutualText}`);
+                scheduleNext(0);
                 return;
             }
 
-            setStatus(`准备移除：${name}`);
-            const armed = await ensureConfirmVisible(target.removeButton, target.row);
-            if (!armed) {
-                setStatus(`未找到确认按钮：${name}`);
+            if (lastFailure) {
+                setStatus(lastFailure);
                 scheduleNext(800);
                 return;
             }
 
-            const confirmButton = findVisibleConfirm(target.row) || findVisibleConfirm(target.removeButton);
-            if (!confirmButton) {
-                setStatus(`确认按钮不可见：${name}`);
-                scheduleNext(800);
+            if (visibleMutualTargets.length > 0) {
+                setStatus(`当前可见区域只有“相互关注”或没有可删目标，请手动滚动后继续`);
+                scheduleNext(600);
                 return;
             }
 
-            safeClick(confirmButton);
-            state.processed += 1;
-            setStatus(`已移除：${name}`);
-            await sleep(350);
-            scheduleNext(state.settings.delayMs);
+            setStatus('当前可见区域没有可移除的目标');
+            scheduleNext(600);
         } catch (error) {
             console.error('[抖音粉丝自动移除] 执行失败', error);
             setStatus(`执行异常：${error.message || error}`);
@@ -287,18 +276,26 @@
         };
     }
 
-    function getFirstVisibleTarget(context) {
+    function getVisibleTargets(context) {
         const rows = getRows(context.container);
-        if (!rows.length) return null;
+        if (!rows.length) return [];
 
         const viewport = context.scrollContainer.getBoundingClientRect();
-        const visibleRows = rows
+        return rows
             .map((row) => buildRowTarget(row))
             .filter(Boolean)
             .filter((target) => isRowVisible(target.row, viewport))
             .sort((a, b) => a.row.getBoundingClientRect().top - b.row.getBoundingClientRect().top);
+    }
 
-        return visibleRows[0] || null;
+    function getFirstRemovableTarget(visibleTargets) {
+        return visibleTargets.find((target) => !isMutualFollowRow(target.row)) || null;
+    }
+
+    function getBatchRemovableTargets(visibleTargets, batchSize) {
+        return visibleTargets
+            .filter((target) => !isMutualFollowRow(target.row))
+            .slice(0, batchSize);
     }
 
     function getRows(container) {
@@ -325,6 +322,7 @@
             row,
             removeButton,
             name: getUserName(row),
+            key: getUserKey(row),
         };
     }
 
@@ -366,6 +364,16 @@
         return '';
     }
 
+    function getUserKey(row) {
+        const anchor = row.querySelector('a[href*="/user/"]');
+        if (anchor) {
+            const href = anchor.getAttribute('href') || anchor.href || '';
+            const normalizedHref = normalizeText(href);
+            if (normalizedHref) return normalizedHref;
+        }
+        return getUserName(row) || '';
+    }
+
     function findScrollContainer(container) {
         let node = container;
         while (node && node !== document.body) {
@@ -385,39 +393,25 @@
         return rect.bottom > viewportRect.top + 4 && rect.top < viewportRect.bottom - 4;
     }
 
-    function scrollPastRow(scrollContainer, target) {
-        const before = scrollContainer.scrollTop;
-        const step = getScrollStep(target);
-        scrollContainer.scrollBy({ top: step, behavior: 'auto' });
-        return scrollContainer.scrollTop !== before;
-    }
-
-    function getScrollStep(target) {
-        const rect = target.row.getBoundingClientRect();
-        const nextRow = getNextRow(target.row);
-        if (nextRow) {
-            const delta = nextRow.getBoundingClientRect().top - rect.top;
-            if (delta > 30) return delta;
-        }
-        return Math.max(Math.round(rect.height || target.removeButton.getBoundingClientRect().height || 88), 60);
-    }
-
-    function getNextRow(row) {
-        let next = row.nextElementSibling;
-        while (next) {
-            if (findRemoveButton(next)) return next;
-            next = next.nextElementSibling;
-        }
-        return null;
-    }
-
     async function ensureConfirmVisible(removeButton, row) {
         const existing = findVisibleConfirm(row) || findVisibleConfirm(removeButton);
-        if (existing) return true;
+        if (existing) {
+            return { ok: true, state: 'confirm', confirmButton: existing };
+        }
 
         safeClick(removeButton);
-        const confirmButton = await waitFor(() => findVisibleConfirm(row) || findVisibleConfirm(removeButton), 2500, 120);
-        return Boolean(confirmButton);
+        const result = await waitFor(() => {
+            const confirmButton = findVisibleConfirm(row) || findVisibleConfirm(removeButton);
+            if (confirmButton) {
+                return { ok: true, state: 'confirm', confirmButton };
+            }
+            if (isRowRemoved(row)) {
+                return { ok: true, state: 'removed' };
+            }
+            return null;
+        }, 1800, 80);
+
+        return result || { ok: false, state: 'missing' };
     }
 
     function findVisibleConfirm(scope) {
@@ -432,26 +426,124 @@
         return null;
     }
 
+    async function removeTarget(target) {
+        const name = target.name || '未知用户';
+        setStatus(`准备移除：${name}`);
+
+        const prepareResult = await ensureConfirmVisible(target.removeButton, target.row);
+        if (!prepareResult.ok) {
+            return { ok: false, message: `未找到确认按钮：${name}` };
+        }
+
+        if (prepareResult.state === 'removed') {
+            return { ok: true };
+        }
+
+        const confirmButton = prepareResult.confirmButton
+            || findVisibleConfirm(target.row)
+            || findVisibleConfirm(target.removeButton);
+        if (!confirmButton) {
+            if (isRowRemoved(target.row)) {
+                return { ok: true };
+            }
+            return { ok: false, message: `确认按钮不可见：${name}` };
+        }
+
+        safeClick(confirmButton);
+        await waitForRowRemoval(target.row, 1200, 80);
+        return { ok: true };
+    }
+
+    async function removeTargetsSimultaneously(targets) {
+        const targetNames = targets.map((target) => target.name || '未知用户');
+        setStatus(`准备同时移除：${targetNames.join('、')}`);
+
+        const directRemoved = [];
+        const pendingTargets = [];
+
+        for (const target of targets) {
+            if (isRowRemoved(target.row)) {
+                directRemoved.push(target.name || '未知用户');
+                continue;
+            }
+            const existingConfirm = findVisibleConfirm(target.row) || findVisibleConfirm(target.removeButton);
+            if (!existingConfirm) {
+                safeClick(target.removeButton);
+            }
+            pendingTargets.push(target);
+        }
+
+        if (pendingTargets.length > 0) {
+            await sleep(160);
+        }
+
+        const preparedResults = await Promise.all(
+            pendingTargets.map((target) => waitForTargetReady(target))
+        );
+
+        const removedNames = [...directRemoved];
+        const confirmTargets = [];
+        let lastFailure = null;
+
+        for (const result of preparedResults) {
+            if (result.state === 'removed') {
+                removedNames.push(result.target.name || '未知用户');
+                continue;
+            }
+            if (result.state === 'confirm') {
+                confirmTargets.push(result);
+                continue;
+            }
+            lastFailure = `未找到确认按钮：${result.target.name || '未知用户'}`;
+        }
+
+        for (const result of confirmTargets) {
+            safeClick(result.confirmButton);
+        }
+
+        if (confirmTargets.length > 0) {
+            await Promise.all(confirmTargets.map((result) => waitForRowRemoval(result.target.row, 1200, 80)));
+            removedNames.push(...confirmTargets.map((result) => result.target.name || '未知用户'));
+        }
+
+        const uniqueRemovedNames = dedupeStrings(removedNames);
+        return {
+            ok: uniqueRemovedNames.length > 0 || !lastFailure,
+            removedNames: uniqueRemovedNames,
+            message: uniqueRemovedNames.length > 0 ? null : lastFailure,
+        };
+    }
+
+    async function waitForTargetReady(target) {
+        if (isRowRemoved(target.row)) {
+            return { target, state: 'removed' };
+        }
+
+        const existingConfirm = findVisibleConfirm(target.row) || findVisibleConfirm(target.removeButton);
+        if (existingConfirm) {
+            return { target, state: 'confirm', confirmButton: existingConfirm };
+        }
+
+        const result = await waitFor(() => {
+            const confirmButton = findVisibleConfirm(target.row) || findVisibleConfirm(target.removeButton);
+            if (confirmButton) {
+                return { target, state: 'confirm', confirmButton };
+            }
+            if (isRowRemoved(target.row)) {
+                return { target, state: 'removed' };
+            }
+            return null;
+        }, 900, 60);
+
+        return result || { target, state: 'missing' };
+    }
+
     function safeClick(element) {
         if (!element) return;
-
-        const rect = element.getBoundingClientRect();
-        const options = {
-            bubbles: true,
-            cancelable: true,
-            clientX: rect.left + rect.width / 2,
-            clientY: rect.top + rect.height / 2,
-        };
 
         if (typeof element.focus === 'function') {
             element.focus({ preventScroll: true });
         }
-
-        const PointerCtor = window.PointerEvent || window.MouseEvent;
-        element.dispatchEvent(new PointerCtor('pointerdown', options));
-        element.dispatchEvent(new MouseEvent('mousedown', options));
-        element.dispatchEvent(new PointerCtor('pointerup', options));
-        element.dispatchEvent(new MouseEvent('mouseup', options));
 
         if (typeof element.click === 'function') {
             element.click();
@@ -463,6 +555,32 @@
             const text = normalizeText(button.innerText || button.textContent || '');
             return text.includes('相互关注');
         });
+    }
+
+    function clampBatchSize(value) {
+        const numeric = Number(value) || 1;
+        return Math.min(5, Math.max(1, Math.round(numeric)));
+    }
+
+    function countNewSkippedKeys(keys) {
+        let count = 0;
+        for (const key of keys) {
+            if (!key || state.skippedKeys.has(key)) continue;
+            state.skippedKeys.add(key);
+            count += 1;
+        }
+        return count;
+    }
+
+    function dedupeStrings(items) {
+        const seen = new Set();
+        const result = [];
+        for (const item of items) {
+            if (!item || seen.has(item)) continue;
+            seen.add(item);
+            result.push(item);
+        }
+        return result;
     }
 
     function normalizeText(text) {
@@ -496,6 +614,15 @@
                 }
             }, intervalMs);
         });
+    }
+
+    async function waitForRowRemoval(row, timeoutMs, intervalMs) {
+        const removed = await waitFor(() => isRowRemoved(row) ? true : null, timeoutMs, intervalMs);
+        return Boolean(removed);
+    }
+
+    function isRowRemoved(row) {
+        return !row || !row.isConnected || !document.contains(row);
     }
 
     function sleep(ms) {

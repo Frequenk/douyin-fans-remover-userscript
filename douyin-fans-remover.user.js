@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         抖音粉丝自动移除
-// @namespace    https://github.com/frequenk
-// @version      0.1.2
-// @description  在网页版抖音粉丝弹窗中自动移除粉丝，支持暂停、手动执行间隔和自动跳过相互关注
+// @namespace    Violentmonkey Scripts
+// @version      0.2.0
+// @changelog    简化控制面板为开始/暂停，固定批量处理当前可见目标并跳过相互关注，补充截图与发布文档；
+// @description  在网页版抖音粉丝弹窗中自动移除粉丝，支持暂停、批量处理和跳过相互关注
 // @author       Frequenk
 // @license      GPL-3.0 License
 // @match        *://www.douyin.com/user/self*
 // @grant        none
 // @run-at       document-idle
+// @downloadURL https://update.greasyfork.org/scripts/576245/%E6%8A%96%E9%9F%B3%E7%B2%89%E4%B8%9D%E8%87%AA%E5%8A%A8%E7%A7%BB%E9%99%A4.user.js
+// @updateURL   https://update.greasyfork.org/scripts/576245/%E6%8A%96%E9%9F%B3%E7%B2%89%E4%B8%9D%E8%87%AA%E5%8A%A8%E7%A7%BB%E9%99%A4.meta.js
 // ==/UserScript==
 
 (() => {
@@ -19,7 +22,8 @@
     const CONTAINER_SELECTOR = '[data-e2e="user-fans-container"]';
     const FOOTER_SELECTOR = '[data-e2e="user-fans-footer"]';
     const DEFAULT_SETTINGS = {
-      delayMs: 0
+      delayMs: 0,
+      batchSize: 5
     };
     const state = {
       running: false,
@@ -28,7 +32,8 @@
       settings: loadSettings(),
       status: "\u7B49\u5F85\u5F00\u59CB",
       processed: 0,
-      skipped: 0
+      skipped: 0,
+      skippedKeys: /* @__PURE__ */ new Set()
     };
     init();
     function init() {
@@ -41,7 +46,11 @@
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw)
           return { ...DEFAULT_SETTINGS };
-        return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+        const parsed = JSON.parse(raw);
+        return {
+          ...parsed,
+          ...DEFAULT_SETTINGS
+        };
       } catch (error) {
         console.warn("[\u6296\u97F3\u7C89\u4E1D\u81EA\u52A8\u79FB\u9664] \u8BFB\u53D6\u914D\u7F6E\u5931\u8D25", error);
         return { ...DEFAULT_SETTINGS };
@@ -90,8 +99,7 @@
                 display: flex;
                 gap: 8px;
             }
-            #${PANEL_ID} button,
-            #${PANEL_ID} input {
+            #${PANEL_ID} button {
                 width: 100%;
             }
             #${PANEL_ID} button {
@@ -111,20 +119,6 @@
             #${PANEL_ID} button:disabled {
                 cursor: not-allowed;
                 opacity: 0.55;
-            }
-            #${PANEL_ID} input {
-                border: 1px solid rgba(255, 255, 255, 0.14);
-                border-radius: 10px;
-                outline: none;
-                font: inherit;
-                padding: 8px 10px;
-                color: #fff;
-                background: rgba(255, 255, 255, 0.08);
-            }
-            #${PANEL_ID} input[type="number"]::-webkit-outer-spin-button,
-            #${PANEL_ID} input[type="number"]::-webkit-inner-spin-button {
-                -webkit-appearance: none;
-                margin: 0;
             }
             #${PANEL_ID} .dyfr-help {
                 margin-top: 6px;
@@ -154,18 +148,12 @@
                     <button type="button" data-action="pause">\u6682\u505C</button>
                 </div>
             </div>
-            <div class="dyfr-row">
-                <label class="dyfr-label" for="${PANEL_ID}-delay">\u6267\u884C\u95F4\u9694</label>
-                <input id="${PANEL_ID}-delay" type="number" min="0" step="0.1" placeholder="0 \u8868\u793A\u7ACB\u5373\u6267\u884C">
-                <div class="dyfr-help">\u5355\u4F4D\uFF1A\u79D2\u3002\u811A\u672C\u4F1A\u81EA\u52A8\u8DF3\u8FC7\u5F53\u524D\u53EF\u89C1\u7B2C\u4E00\u9879\u4E2D\u7684\u201C\u76F8\u4E92\u5173\u6CE8\u201D\u7528\u6237\u3002</div>
-            </div>
+            <div class="dyfr-help">\u5F53\u524D\u53EF\u89C1\u533A\u9047\u5230\u201C\u76F8\u4E92\u5173\u6CE8\u201D\u4F1A\u81EA\u52A8\u8DF3\u8FC7\uFF0C\u9700\u8981\u4F60\u624B\u52A8\u6EDA\u52A8\u628A\u5B83\u4EEC\u79FB\u51FA\u53EF\u89C1\u533A\u3002\u5E73\u53F0\u6BCF\u5929\u4E0A\u9650\u79FB\u9664 2000 \u4EBA\u3002</div>
             <div class="dyfr-status" id="${PANEL_ID}-status">\u7B49\u5F85\u5F00\u59CB</div>
         `;
       document.body.appendChild(panel);
       const startButton = panel.querySelector('[data-action="start"]');
       const pauseButton = panel.querySelector('[data-action="pause"]');
-      const delayInput = panel.querySelector(`#${PANEL_ID}-delay`);
-      delayInput.value = String(state.settings.delayMs / 1e3);
       startButton.addEventListener("click", () => {
         state.running = true;
         setStatus("\u5DF2\u5F00\u59CB");
@@ -176,13 +164,6 @@
         stopLoop();
         setStatus("\u5DF2\u6682\u505C");
         renderPanel();
-      });
-      delayInput.addEventListener("change", () => {
-        const seconds = Math.max(0, Number(delayInput.value) || 0);
-        state.settings.delayMs = Math.round(seconds * 1e3);
-        saveSettings();
-        delayInput.value = String(seconds);
-        setStatus(`\u6267\u884C\u95F4\u9694\u5DF2\u8BBE\u7F6E\u4E3A ${seconds} \u79D2`);
       });
       renderPanel();
     }
@@ -228,38 +209,48 @@
           scheduleNext(1e3);
           return;
         }
-        const target = getFirstVisibleTarget(context);
-        if (!target) {
+        const visibleTargets = getVisibleTargets(context);
+        if (!visibleTargets.length) {
           setStatus("\u5F53\u524D\u6CA1\u6709\u53EF\u5904\u7406\u7684\u7C89\u4E1D\u9879\uFF0C\u53EF\u80FD\u5DF2\u5230\u5E95\u90E8");
           scheduleNext(1e3);
           return;
         }
-        const name = target.name || "\u672A\u77E5\u7528\u6237";
-        if (isMutualFollowRow(target.row)) {
-          const moved = scrollPastRow(context.scrollContainer, target);
-          state.skipped += 1;
-          setStatus(moved ? `\u8DF3\u8FC7\u76F8\u4E92\u5173\u6CE8\uFF1A${name}` : `\u76F8\u4E92\u5173\u6CE8\u547D\u4E2D\u4F46\u65E0\u6CD5\u7EE7\u7EED\u6EDA\u52A8\uFF1A${name}`);
-          scheduleNext(moved ? Math.max(120, state.settings.delayMs) : 1e3);
+        const visibleMutualTargets = visibleTargets.filter((target) => isMutualFollowRow(target.row));
+        if (visibleMutualTargets.length > 0) {
+          state.skipped += countNewSkippedKeys(visibleMutualTargets.map((target) => target.key).filter(Boolean));
+        }
+        const removedNames = [];
+        const batchSize = clampBatchSize(state.settings.batchSize);
+        let lastFailure = null;
+        const batchTargets = getBatchRemovableTargets(getVisibleTargets(context), batchSize);
+        if (batchTargets.length > 0) {
+          const batchResult = await removeTargetsSimultaneously(batchTargets);
+          if (batchResult.removedNames.length > 0) {
+            removedNames.push(...batchResult.removedNames);
+            state.processed += batchResult.removedNames.length;
+          }
+          if (!batchResult.ok && batchResult.message) {
+            lastFailure = batchResult.message;
+          }
+        }
+        if (removedNames.length > 0) {
+          const mutualText = visibleMutualTargets.length > 0 ? `\uFF1B\u5F53\u524D\u53EF\u89C1\u533A\u5DF2\u8DF3\u8FC7 ${visibleMutualTargets.length} \u4E2A\u76F8\u4E92\u5173\u6CE8` : "";
+          setStatus(`\u672C\u8F6E\u5DF2\u79FB\u9664 ${removedNames.length} \u4EBA\uFF1A${removedNames.join("\u3001")}${mutualText}`);
+          scheduleNext(0);
           return;
         }
-        setStatus(`\u51C6\u5907\u79FB\u9664\uFF1A${name}`);
-        const armed = await ensureConfirmVisible(target.removeButton, target.row);
-        if (!armed) {
-          setStatus(`\u672A\u627E\u5230\u786E\u8BA4\u6309\u94AE\uFF1A${name}`);
+        if (lastFailure) {
+          setStatus(lastFailure);
           scheduleNext(800);
           return;
         }
-        const confirmButton = findVisibleConfirm(target.row) || findVisibleConfirm(target.removeButton);
-        if (!confirmButton) {
-          setStatus(`\u786E\u8BA4\u6309\u94AE\u4E0D\u53EF\u89C1\uFF1A${name}`);
-          scheduleNext(800);
+        if (visibleMutualTargets.length > 0) {
+          setStatus(`\u5F53\u524D\u53EF\u89C1\u533A\u57DF\u53EA\u6709\u201C\u76F8\u4E92\u5173\u6CE8\u201D\u6216\u6CA1\u6709\u53EF\u5220\u76EE\u6807\uFF0C\u8BF7\u624B\u52A8\u6EDA\u52A8\u540E\u7EE7\u7EED`);
+          scheduleNext(600);
           return;
         }
-        safeClick(confirmButton);
-        state.processed += 1;
-        setStatus(`\u5DF2\u79FB\u9664\uFF1A${name}`);
-        await sleep(350);
-        scheduleNext(state.settings.delayMs);
+        setStatus("\u5F53\u524D\u53EF\u89C1\u533A\u57DF\u6CA1\u6709\u53EF\u79FB\u9664\u7684\u76EE\u6807");
+        scheduleNext(600);
       } catch (error) {
         console.error("[\u6296\u97F3\u7C89\u4E1D\u81EA\u52A8\u79FB\u9664] \u6267\u884C\u5931\u8D25", error);
         setStatus(`\u6267\u884C\u5F02\u5E38\uFF1A${error.message || error}`);
@@ -279,13 +270,18 @@
         scrollContainer
       };
     }
-    function getFirstVisibleTarget(context) {
+    function getVisibleTargets(context) {
       const rows = getRows(context.container);
       if (!rows.length)
-        return null;
+        return [];
       const viewport = context.scrollContainer.getBoundingClientRect();
-      const visibleRows = rows.map((row) => buildRowTarget(row)).filter(Boolean).filter((target) => isRowVisible(target.row, viewport)).sort((a, b) => a.row.getBoundingClientRect().top - b.row.getBoundingClientRect().top);
-      return visibleRows[0] || null;
+      return rows.map((row) => buildRowTarget(row)).filter(Boolean).filter((target) => isRowVisible(target.row, viewport)).sort((a, b) => a.row.getBoundingClientRect().top - b.row.getBoundingClientRect().top);
+    }
+    function getFirstRemovableTarget(visibleTargets) {
+      return visibleTargets.find((target) => !isMutualFollowRow(target.row)) || null;
+    }
+    function getBatchRemovableTargets(visibleTargets, batchSize) {
+      return visibleTargets.filter((target) => !isMutualFollowRow(target.row)).slice(0, batchSize);
     }
     function getRows(container) {
       const directRows = Array.from(container.querySelectorAll(".i5U4dMnB")).filter((row) => findRemoveButton(row));
@@ -311,7 +307,8 @@
       return {
         row,
         removeButton,
-        name: getUserName(row)
+        name: getUserName(row),
+        key: getUserKey(row)
       };
     }
     function findRemoveButton(scope) {
@@ -348,6 +345,16 @@
       }
       return "";
     }
+    function getUserKey(row) {
+      const anchor = row.querySelector('a[href*="/user/"]');
+      if (anchor) {
+        const href = anchor.getAttribute("href") || anchor.href || "";
+        const normalizedHref = normalizeText(href);
+        if (normalizedHref)
+          return normalizedHref;
+      }
+      return getUserName(row) || "";
+    }
     function findScrollContainer(container) {
       let node = container;
       while (node && node !== document.body) {
@@ -366,38 +373,23 @@
       const rect = row.getBoundingClientRect();
       return rect.bottom > viewportRect.top + 4 && rect.top < viewportRect.bottom - 4;
     }
-    function scrollPastRow(scrollContainer, target) {
-      const before = scrollContainer.scrollTop;
-      const step = getScrollStep(target);
-      scrollContainer.scrollBy({ top: step, behavior: "auto" });
-      return scrollContainer.scrollTop !== before;
-    }
-    function getScrollStep(target) {
-      const rect = target.row.getBoundingClientRect();
-      const nextRow = getNextRow(target.row);
-      if (nextRow) {
-        const delta = nextRow.getBoundingClientRect().top - rect.top;
-        if (delta > 30)
-          return delta;
-      }
-      return Math.max(Math.round(rect.height || target.removeButton.getBoundingClientRect().height || 88), 60);
-    }
-    function getNextRow(row) {
-      let next = row.nextElementSibling;
-      while (next) {
-        if (findRemoveButton(next))
-          return next;
-        next = next.nextElementSibling;
-      }
-      return null;
-    }
     async function ensureConfirmVisible(removeButton, row) {
       const existing = findVisibleConfirm(row) || findVisibleConfirm(removeButton);
-      if (existing)
-        return true;
+      if (existing) {
+        return { ok: true, state: "confirm", confirmButton: existing };
+      }
       safeClick(removeButton);
-      const confirmButton = await waitFor(() => findVisibleConfirm(row) || findVisibleConfirm(removeButton), 2500, 120);
-      return Boolean(confirmButton);
+      const result = await waitFor(() => {
+        const confirmButton = findVisibleConfirm(row) || findVisibleConfirm(removeButton);
+        if (confirmButton) {
+          return { ok: true, state: "confirm", confirmButton };
+        }
+        if (isRowRemoved(row)) {
+          return { ok: true, state: "removed" };
+        }
+        return null;
+      }, 1800, 80);
+      return result || { ok: false, state: "missing" };
     }
     function findVisibleConfirm(scope) {
       if (!scope)
@@ -411,24 +403,103 @@
       }
       return null;
     }
+    async function removeTarget(target) {
+      const name = target.name || "\u672A\u77E5\u7528\u6237";
+      setStatus(`\u51C6\u5907\u79FB\u9664\uFF1A${name}`);
+      const prepareResult = await ensureConfirmVisible(target.removeButton, target.row);
+      if (!prepareResult.ok) {
+        return { ok: false, message: `\u672A\u627E\u5230\u786E\u8BA4\u6309\u94AE\uFF1A${name}` };
+      }
+      if (prepareResult.state === "removed") {
+        return { ok: true };
+      }
+      const confirmButton = prepareResult.confirmButton || findVisibleConfirm(target.row) || findVisibleConfirm(target.removeButton);
+      if (!confirmButton) {
+        if (isRowRemoved(target.row)) {
+          return { ok: true };
+        }
+        return { ok: false, message: `\u786E\u8BA4\u6309\u94AE\u4E0D\u53EF\u89C1\uFF1A${name}` };
+      }
+      safeClick(confirmButton);
+      await waitForRowRemoval(target.row, 1200, 80);
+      return { ok: true };
+    }
+    async function removeTargetsSimultaneously(targets) {
+      const targetNames = targets.map((target) => target.name || "\u672A\u77E5\u7528\u6237");
+      setStatus(`\u51C6\u5907\u540C\u65F6\u79FB\u9664\uFF1A${targetNames.join("\u3001")}`);
+      const directRemoved = [];
+      const pendingTargets = [];
+      for (const target of targets) {
+        if (isRowRemoved(target.row)) {
+          directRemoved.push(target.name || "\u672A\u77E5\u7528\u6237");
+          continue;
+        }
+        const existingConfirm = findVisibleConfirm(target.row) || findVisibleConfirm(target.removeButton);
+        if (!existingConfirm) {
+          safeClick(target.removeButton);
+        }
+        pendingTargets.push(target);
+      }
+      if (pendingTargets.length > 0) {
+        await sleep(160);
+      }
+      const preparedResults = await Promise.all(
+        pendingTargets.map((target) => waitForTargetReady(target))
+      );
+      const removedNames = [...directRemoved];
+      const confirmTargets = [];
+      let lastFailure = null;
+      for (const result of preparedResults) {
+        if (result.state === "removed") {
+          removedNames.push(result.target.name || "\u672A\u77E5\u7528\u6237");
+          continue;
+        }
+        if (result.state === "confirm") {
+          confirmTargets.push(result);
+          continue;
+        }
+        lastFailure = `\u672A\u627E\u5230\u786E\u8BA4\u6309\u94AE\uFF1A${result.target.name || "\u672A\u77E5\u7528\u6237"}`;
+      }
+      for (const result of confirmTargets) {
+        safeClick(result.confirmButton);
+      }
+      if (confirmTargets.length > 0) {
+        await Promise.all(confirmTargets.map((result) => waitForRowRemoval(result.target.row, 1200, 80)));
+        removedNames.push(...confirmTargets.map((result) => result.target.name || "\u672A\u77E5\u7528\u6237"));
+      }
+      const uniqueRemovedNames = dedupeStrings(removedNames);
+      return {
+        ok: uniqueRemovedNames.length > 0 || !lastFailure,
+        removedNames: uniqueRemovedNames,
+        message: uniqueRemovedNames.length > 0 ? null : lastFailure
+      };
+    }
+    async function waitForTargetReady(target) {
+      if (isRowRemoved(target.row)) {
+        return { target, state: "removed" };
+      }
+      const existingConfirm = findVisibleConfirm(target.row) || findVisibleConfirm(target.removeButton);
+      if (existingConfirm) {
+        return { target, state: "confirm", confirmButton: existingConfirm };
+      }
+      const result = await waitFor(() => {
+        const confirmButton = findVisibleConfirm(target.row) || findVisibleConfirm(target.removeButton);
+        if (confirmButton) {
+          return { target, state: "confirm", confirmButton };
+        }
+        if (isRowRemoved(target.row)) {
+          return { target, state: "removed" };
+        }
+        return null;
+      }, 900, 60);
+      return result || { target, state: "missing" };
+    }
     function safeClick(element) {
       if (!element)
         return;
-      const rect = element.getBoundingClientRect();
-      const options = {
-        bubbles: true,
-        cancelable: true,
-        clientX: rect.left + rect.width / 2,
-        clientY: rect.top + rect.height / 2
-      };
       if (typeof element.focus === "function") {
         element.focus({ preventScroll: true });
       }
-      const PointerCtor = window.PointerEvent || window.MouseEvent;
-      element.dispatchEvent(new PointerCtor("pointerdown", options));
-      element.dispatchEvent(new MouseEvent("mousedown", options));
-      element.dispatchEvent(new PointerCtor("pointerup", options));
-      element.dispatchEvent(new MouseEvent("mouseup", options));
       if (typeof element.click === "function") {
         element.click();
       }
@@ -438,6 +509,31 @@
         const text = normalizeText(button.innerText || button.textContent || "");
         return text.includes("\u76F8\u4E92\u5173\u6CE8");
       });
+    }
+    function clampBatchSize(value) {
+      const numeric = Number(value) || 1;
+      return Math.min(5, Math.max(1, Math.round(numeric)));
+    }
+    function countNewSkippedKeys(keys) {
+      let count = 0;
+      for (const key of keys) {
+        if (!key || state.skippedKeys.has(key))
+          continue;
+        state.skippedKeys.add(key);
+        count += 1;
+      }
+      return count;
+    }
+    function dedupeStrings(items) {
+      const seen = /* @__PURE__ */ new Set();
+      const result = [];
+      for (const item of items) {
+        if (!item || seen.has(item))
+          continue;
+        seen.add(item);
+        result.push(item);
+      }
+      return result;
     }
     function normalizeText(text) {
       return String(text || "").replace(/\s+/g, " ").trim();
@@ -468,6 +564,13 @@
           }
         }, intervalMs);
       });
+    }
+    async function waitForRowRemoval(row, timeoutMs, intervalMs) {
+      const removed = await waitFor(() => isRowRemoved(row) ? true : null, timeoutMs, intervalMs);
+      return Boolean(removed);
+    }
+    function isRowRemoved(row) {
+      return !row || !row.isConnected || !document.contains(row);
     }
     function sleep(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));

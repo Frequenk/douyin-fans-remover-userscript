@@ -1,41 +1,63 @@
 # 抖音粉丝自动移除
 
-一个面向网页版抖音个人中心粉丝弹窗的用户脚本，核心目标是批量移除粉丝，并尽量减少手工重复点击。
+[![Greasy Fork](https://img.shields.io/greasyfork/v/576245?label=Greasy%20Fork&logo=greasyfork&logoColor=white)](https://greasyfork.org/zh-CN/scripts/576245-%E6%8A%96%E9%9F%B3%E7%B2%89%E4%B8%9D%E8%87%AA%E5%8A%A8%E7%A7%BB%E9%99%A4)
+[![GitHub stars](https://img.shields.io/github/stars/Frequenk/douyin-fans-remover-userscript?style=flat&logo=github&label=Stars&color=white)](https://github.com/Frequenk/douyin-fans-remover-userscript/stargazers)
+[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-## 功能概览
+一个面向网页版抖音个人中心粉丝弹窗的用户脚本，用来批量移除粉丝并减少重复手工操作。脚本支持自动识别并跳过“相互关注”用户；当这些用户停留在可见区时，需要你手动滚动把它们移出可见区后再继续处理。按当前平台限制，每天上限移除 2000 人。
 
-- 自动处理当前可见第一项粉丝，依次执行“移除”与“确认移除”
-- 右侧悬浮面板支持开始、暂停与手动填写执行间隔
-- 自动识别“相互关注”按钮并跳过对应用户
-- 仅在 `https://www.douyin.com/user/self*` 生效，避免影响其他抖音页面
+## 📸 效果预览
 
-## 效果预览
+![功能面板截图](https://raw.githubusercontent.com/Frequenk/douyin-fans-remover-userscript/master/images/screenshot-1.png)
 
-本项目的介绍截图使用本次整理时的实拍图，也就是当前对话里提供的面板截图。
+## ✨ 功能概览
 
-- 预留路径：`images/panel-screenshot.png`
-- 说明文件：[images/README.md](images/README.md)
+- 自动处理粉丝弹窗中当前可见的可移除目标
+- 自动点击“移除”与“确认移除”
+- 自动识别“相互关注”按钮并跳过
+- 默认每轮同时移除最多 `5` 人，若当前可见人数不足则按实际数量处理
+- 平台每天上限移除 `2000` 人
+- 仅在 `https://www.douyin.com/user/self*` 生效
 
-由于当前对话附件不能直接自动落盘到工作区，仓库里先保留了截图位说明；如果你要把截图真正放进仓库，直接把这张图保存到上面的路径即可。
+## 📦 安装
 
-## 安装
+先安装 [Tampermonkey](https://www.tampermonkey.net/) 或 [Violentmonkey](https://violentmonkey.github.io/)。
 
-1. 安装 `Tampermonkey` 或 `Violentmonkey`
-2. 打开项目根目录下的 `douyin-fans-remover.user.js`
-3. 导入到脚本管理器后，访问 `https://www.douyin.com/user/self`
-4. 打开粉丝弹窗，使用右侧悬浮面板控制脚本
+然后任选一种方式：
 
-## 开发
+1. 从 [Greasy Fork 一键安装](https://greasyfork.org/zh-CN/scripts/576245-%E6%8A%96%E9%9F%B3%E7%B2%89%E4%B8%9D%E8%87%AA%E5%8A%A8%E7%A7%BB%E9%99%A4)
+2. 打开项目根目录下的 [douyin-fans-remover.user.js](douyin-fans-remover.user.js)，手动导入脚本管理器
 
-- 源码入口：[src/index.js](src/index.js)
-- 用户脚本头：[src/userscript.header.js](src/userscript.header.js)
-- 构建命令：`npm run build`
-- 监听构建：`npm run build:watch`
+## 🚀 使用方法
 
-## 文档
+1. 打开 `https://www.douyin.com/user/self`
+2. 进入个人中心后打开“粉丝”弹窗
+3. 在页面右侧找到“抖音粉丝自动移除”悬浮面板
+4. 点击“开始”启动，点击“暂停”随时停止
+
+建议：
+
+- 若当前可见区有“相互关注”，脚本会直接跳过；需要你手动滚动把它们移出可见区
+- 脚本默认每轮会尽量同时处理当前可见区内最多 `5` 个可删目标
+- 按当前平台限制，每天最多移除 `2000` 人
+
+## 📚 详细文档
 
 - [功能说明](docs/features.md)
+- [协作约定](AGENTS.md)
 
-## 许可证
+## 🔗 相关链接
 
-本项目采用 [GPL-3.0 License](LICENSE)。
+- [Greasy Fork 发布页](https://greasyfork.org/zh-CN/scripts/576245-%E6%8A%96%E9%9F%B3%E7%B2%89%E4%B8%9D%E8%87%AA%E5%8A%A8%E7%A7%BB%E9%99%A4)
+- [GitHub 仓库](https://github.com/Frequenk/douyin-fans-remover-userscript)
+
+## 📄 许可证
+
+本项目采用 [GPL-3.0 License](https://opensource.org/licenses/GPL-3.0) 开源协议。
+
+## ⭐ 支持
+
+如果这个脚本对你有帮助，可以：
+
+- 在 [Greasy Fork](https://greasyfork.org/zh-CN/scripts/576245-%E6%8A%96%E9%9F%B3%E7%B2%89%E4%B8%9D%E8%87%AA%E5%8A%A8%E7%A7%BB%E9%99%A4) 给个好评
+- 在 [GitHub](https://github.com/Frequenk/douyin-fans-remover-userscript) 点个 Star
