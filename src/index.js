@@ -11,6 +11,8 @@
         batchSize: 5,
         collapsed: false,
     };
+    const AUTO_SCROLL_THRESHOLD = 15;
+    const BOTTOM_SCROLL_SETTLE_DELAY_MS = 220;
     const state = {
         running: false,
         busy: false,
@@ -219,7 +221,7 @@
                 </div>
             </div>
             <div class="dyfr-status" id="${PANEL_ID}-status">等待开始</div>
-            <div class="dyfr-help">自动跳过“相互关注”。平台每天上限移除约 2000 人。</div>
+            <div class="dyfr-help">自动跳过“相互关注”。平台每天上限移除约 2500 人。</div>
         `;
         document.body.appendChild(panel);
 
@@ -329,16 +331,34 @@
                 return;
             }
 
+            const loadedTargets = getLoadedTargets(context);
+            if (!loadedTargets.length) {
+                const moved = pushScrollContainerToBottom(context.scrollContainer);
+                setStatus(moved ? '当前没有已加载的粉丝项，触发一次触底' : '当前没有可处理的粉丝项');
+                scheduleNext(moved ? BOTTOM_SCROLL_SETTLE_DELAY_MS : 1000);
+                return;
+            }
+
             const visibleTargets = getVisibleTargets(context);
             if (!visibleTargets.length) {
-                setStatus('当前没有可处理的粉丝项，可能已到底部');
+                setStatus('当前没有可处理的粉丝项');
                 scheduleNext(1000);
                 return;
             }
 
             const visibleMutualTargets = visibleTargets.filter((target) => isMutualFollowRow(target.row));
+            const loadedRemovableCount = loadedTargets.filter((target) => !isMutualFollowRow(target.row)).length;
             if (visibleMutualTargets.length > 0) {
                 state.skipped += countNewSkippedKeys(visibleMutualTargets.map((target) => target.key).filter(Boolean));
+            }
+
+            if (loadedRemovableCount < AUTO_SCROLL_THRESHOLD) {
+                const moved = pushScrollContainerToBottom(context.scrollContainer);
+                if (moved) {
+                    setStatus(`当前已加载的非互关目标少于 ${AUTO_SCROLL_THRESHOLD} 个，触发一次触底`);
+                    scheduleNext(BOTTOM_SCROLL_SETTLE_DELAY_MS);
+                    return;
+                }
             }
 
             const removedNames = [];
@@ -372,7 +392,7 @@
             }
 
             if (visibleMutualTargets.length > 0) {
-                setStatus(`当前可见区域只有“相互关注”或没有可删目标，请手动滚动后继续`);
+                setStatus('当前可见区域只有“相互关注”或没有可删目标');
                 scheduleNext(600);
                 return;
             }
@@ -410,6 +430,12 @@
             .filter(Boolean)
             .filter((target) => isRowVisible(target.row, viewport))
             .sort((a, b) => a.row.getBoundingClientRect().top - b.row.getBoundingClientRect().top);
+    }
+
+    function getLoadedTargets(context) {
+        return getRows(context.container)
+            .map((row) => buildRowTarget(row))
+            .filter(Boolean);
     }
 
     function getFirstRemovableTarget(visibleTargets) {
@@ -509,6 +535,19 @@
             node = node.parentElement;
         }
         return container;
+    }
+
+    function pushScrollContainerToBottom(scrollContainer) {
+        if (!scrollContainer) return false;
+
+        const nextTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+        if (nextTop <= scrollContainer.scrollTop + 1) return false;
+
+        scrollContainer.scrollTo({
+            top: nextTop,
+            behavior: 'auto',
+        });
+        return true;
     }
 
     function isRowVisible(row, viewportRect) {

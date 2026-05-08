@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         抖音粉丝自动移除
 // @namespace    Violentmonkey Scripts
-// @version      0.3.0
-// @changelog    新增悬浮窗收缩功能，支持将面板收缩为右侧居中的小球，并优化了 UI 视觉效果；
+// @version      0.4.0
+// @changelog    调整自动触底策略，按已加载的非互关目标数量阈值触发一次触底；同步将每日上限文案更新为 2500 人；
 // @description  在网页版抖音粉丝弹窗中自动移除粉丝，支持暂停、批量处理和跳过相互关注
 // @author       Frequenk
 // @license      GPL-3.0 License
@@ -27,6 +27,8 @@
       batchSize: 5,
       collapsed: false
     };
+    const AUTO_SCROLL_THRESHOLD = 15;
+    const BOTTOM_SCROLL_SETTLE_DELAY_MS = 220;
     const state = {
       running: false,
       busy: false,
@@ -230,7 +232,7 @@
                 </div>
             </div>
             <div class="dyfr-status" id="${PANEL_ID}-status">\u7B49\u5F85\u5F00\u59CB</div>
-            <div class="dyfr-help">\u81EA\u52A8\u8DF3\u8FC7\u201C\u76F8\u4E92\u5173\u6CE8\u201D\u3002\u5E73\u53F0\u6BCF\u5929\u4E0A\u9650\u79FB\u9664\u7EA6 2000 \u4EBA\u3002</div>
+            <div class="dyfr-help">\u81EA\u52A8\u8DF3\u8FC7\u201C\u76F8\u4E92\u5173\u6CE8\u201D\u3002\u5E73\u53F0\u6BCF\u5929\u4E0A\u9650\u79FB\u9664\u7EA6 2500 \u4EBA\u3002</div>
         `;
       document.body.appendChild(panel);
       const startButton = panel.querySelector('[data-action="start"]');
@@ -330,15 +332,31 @@
           scheduleNext(1e3);
           return;
         }
+        const loadedTargets = getLoadedTargets(context);
+        if (!loadedTargets.length) {
+          const moved = pushScrollContainerToBottom(context.scrollContainer);
+          setStatus(moved ? "\u5F53\u524D\u6CA1\u6709\u5DF2\u52A0\u8F7D\u7684\u7C89\u4E1D\u9879\uFF0C\u89E6\u53D1\u4E00\u6B21\u89E6\u5E95" : "\u5F53\u524D\u6CA1\u6709\u53EF\u5904\u7406\u7684\u7C89\u4E1D\u9879");
+          scheduleNext(moved ? BOTTOM_SCROLL_SETTLE_DELAY_MS : 1e3);
+          return;
+        }
         const visibleTargets = getVisibleTargets(context);
         if (!visibleTargets.length) {
-          setStatus("\u5F53\u524D\u6CA1\u6709\u53EF\u5904\u7406\u7684\u7C89\u4E1D\u9879\uFF0C\u53EF\u80FD\u5DF2\u5230\u5E95\u90E8");
+          setStatus("\u5F53\u524D\u6CA1\u6709\u53EF\u5904\u7406\u7684\u7C89\u4E1D\u9879");
           scheduleNext(1e3);
           return;
         }
         const visibleMutualTargets = visibleTargets.filter((target) => isMutualFollowRow(target.row));
+        const loadedRemovableCount = loadedTargets.filter((target) => !isMutualFollowRow(target.row)).length;
         if (visibleMutualTargets.length > 0) {
           state.skipped += countNewSkippedKeys(visibleMutualTargets.map((target) => target.key).filter(Boolean));
+        }
+        if (loadedRemovableCount < AUTO_SCROLL_THRESHOLD) {
+          const moved = pushScrollContainerToBottom(context.scrollContainer);
+          if (moved) {
+            setStatus(`\u5F53\u524D\u5DF2\u52A0\u8F7D\u7684\u975E\u4E92\u5173\u76EE\u6807\u5C11\u4E8E ${AUTO_SCROLL_THRESHOLD} \u4E2A\uFF0C\u89E6\u53D1\u4E00\u6B21\u89E6\u5E95`);
+            scheduleNext(BOTTOM_SCROLL_SETTLE_DELAY_MS);
+            return;
+          }
         }
         const removedNames = [];
         const batchSize = clampBatchSize(state.settings.batchSize);
@@ -366,7 +384,7 @@
           return;
         }
         if (visibleMutualTargets.length > 0) {
-          setStatus(`\u5F53\u524D\u53EF\u89C1\u533A\u57DF\u53EA\u6709\u201C\u76F8\u4E92\u5173\u6CE8\u201D\u6216\u6CA1\u6709\u53EF\u5220\u76EE\u6807\uFF0C\u8BF7\u624B\u52A8\u6EDA\u52A8\u540E\u7EE7\u7EED`);
+          setStatus("\u5F53\u524D\u53EF\u89C1\u533A\u57DF\u53EA\u6709\u201C\u76F8\u4E92\u5173\u6CE8\u201D\u6216\u6CA1\u6709\u53EF\u5220\u76EE\u6807");
           scheduleNext(600);
           return;
         }
@@ -397,6 +415,9 @@
         return [];
       const viewport = context.scrollContainer.getBoundingClientRect();
       return rows.map((row) => buildRowTarget(row)).filter(Boolean).filter((target) => isRowVisible(target.row, viewport)).sort((a, b) => a.row.getBoundingClientRect().top - b.row.getBoundingClientRect().top);
+    }
+    function getLoadedTargets(context) {
+      return getRows(context.container).map((row) => buildRowTarget(row)).filter(Boolean);
     }
     function getFirstRemovableTarget(visibleTargets) {
       return visibleTargets.find((target) => !isMutualFollowRow(target.row)) || null;
@@ -487,6 +508,18 @@
         node = node.parentElement;
       }
       return container;
+    }
+    function pushScrollContainerToBottom(scrollContainer) {
+      if (!scrollContainer)
+        return false;
+      const nextTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+      if (nextTop <= scrollContainer.scrollTop + 1)
+        return false;
+      scrollContainer.scrollTo({
+        top: nextTop,
+        behavior: "auto"
+      });
+      return true;
     }
     function isRowVisible(row, viewportRect) {
       if (!isVisible(row))

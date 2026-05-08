@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         抖音粉丝自动移除
 // @namespace    Violentmonkey Scripts
-// @version      0.3.0
-// @changelog    新增悬浮窗收缩功能，支持将面板收缩为右侧居中的小球，并优化了 UI 视觉效果；
+// @version      0.4.0
+// @changelog    调整自动触底策略，按已加载的非互关目标数量阈值触发一次触底；同步将每日上限文案更新为 2500 人；
 // @description  在网页版抖音粉丝弹窗中自动移除粉丝，支持暂停、批量处理和跳过相互关注
 // @author       Frequenk
 // @license      GPL-3.0 License
