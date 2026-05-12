@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         抖音粉丝自动移除
 // @namespace    Violentmonkey Scripts
-// @version      0.4.0
-// @changelog    调整自动触底策略，按已加载的非互关目标数量阈值触发一次触底；同步将每日上限文案更新为 2500 人；
+// @version      0.4.1
+// @changelog    修复表情昵称和空白昵称粉丝在列表底部被误判为无可删目标的问题；保留按非互关阈值自动触底的策略；同步将每日上限文案更新为 2500 人；
 // @description  在网页版抖音粉丝弹窗中自动移除粉丝，支持暂停、批量处理和跳过相互关注
 // @author       Frequenk
 // @license      GPL-3.0 License
@@ -332,16 +332,17 @@
           scheduleNext(1e3);
           return;
         }
+        const reachedEnd = hasNoMoreText(context);
         const loadedTargets = getLoadedTargets(context);
         if (!loadedTargets.length) {
-          const moved = pushScrollContainerToBottom(context.scrollContainer);
+          const moved = reachedEnd ? false : pushScrollContainerToBottom(context.scrollContainer);
           setStatus(moved ? "\u5F53\u524D\u6CA1\u6709\u5DF2\u52A0\u8F7D\u7684\u7C89\u4E1D\u9879\uFF0C\u89E6\u53D1\u4E00\u6B21\u89E6\u5E95" : "\u5F53\u524D\u6CA1\u6709\u53EF\u5904\u7406\u7684\u7C89\u4E1D\u9879");
           scheduleNext(moved ? BOTTOM_SCROLL_SETTLE_DELAY_MS : 1e3);
           return;
         }
         const visibleTargets = getVisibleTargets(context);
         if (!visibleTargets.length) {
-          setStatus("\u5F53\u524D\u6CA1\u6709\u53EF\u5904\u7406\u7684\u7C89\u4E1D\u9879");
+          setStatus(reachedEnd ? "\u5DF2\u5230\u5217\u8868\u5E95\u90E8\uFF0C\u5F53\u524D\u6CA1\u6709\u53EF\u5904\u7406\u7684\u7C89\u4E1D\u9879" : "\u5F53\u524D\u6CA1\u6709\u53EF\u5904\u7406\u7684\u7C89\u4E1D\u9879");
           scheduleNext(1e3);
           return;
         }
@@ -350,7 +351,7 @@
         if (visibleMutualTargets.length > 0) {
           state.skipped += countNewSkippedKeys(visibleMutualTargets.map((target) => target.key).filter(Boolean));
         }
-        if (loadedRemovableCount < AUTO_SCROLL_THRESHOLD) {
+        if (!reachedEnd && loadedRemovableCount < AUTO_SCROLL_THRESHOLD) {
           const moved = pushScrollContainerToBottom(context.scrollContainer);
           if (moved) {
             setStatus(`\u5F53\u524D\u5DF2\u52A0\u8F7D\u7684\u975E\u4E92\u5173\u76EE\u6807\u5C11\u4E8E ${AUTO_SCROLL_THRESHOLD} \u4E2A\uFF0C\u89E6\u53D1\u4E00\u6B21\u89E6\u5E95`);
@@ -361,7 +362,7 @@
         const removedNames = [];
         const batchSize = clampBatchSize(state.settings.batchSize);
         let lastFailure = null;
-        const batchTargets = getBatchRemovableTargets(getVisibleTargets(context), batchSize);
+        const batchTargets = getBatchRemovableTargets(visibleTargets, batchSize);
         if (batchTargets.length > 0) {
           const batchResult = await removeTargetsSimultaneously(batchTargets);
           if (batchResult.removedNames.length > 0) {
@@ -406,6 +407,7 @@
       const scrollContainer = findScrollContainer(container);
       return {
         container,
+        footer,
         scrollContainer
       };
     }
@@ -416,8 +418,8 @@
       const viewport = context.scrollContainer.getBoundingClientRect();
       return rows.map((row) => buildRowTarget(row)).filter(Boolean).filter((target) => isRowVisible(target.row, viewport)).sort((a, b) => a.row.getBoundingClientRect().top - b.row.getBoundingClientRect().top);
     }
-    function getLoadedTargets(context) {
-      return getRows(context.container).map((row) => buildRowTarget(row)).filter(Boolean);
+    function getLoadedTargets(context, includeHidden = false) {
+      return getRows(context.container, includeHidden).map((row) => buildRowTarget(row, includeHidden)).filter(Boolean);
     }
     function getFirstRemovableTarget(visibleTargets) {
       return visibleTargets.find((target) => !isMutualFollowRow(target.row)) || null;
@@ -425,14 +427,14 @@
     function getBatchRemovableTargets(visibleTargets, batchSize) {
       return visibleTargets.filter((target) => !isMutualFollowRow(target.row)).slice(0, batchSize);
     }
-    function getRows(container) {
-      const directRows = Array.from(container.querySelectorAll(".i5U4dMnB")).filter((row) => findRemoveButton(row));
+    function getRows(container, includeHidden = false) {
+      const directRows = Array.from(container.querySelectorAll(".i5U4dMnB")).filter((row) => findRemoveButton(row, includeHidden));
       if (directRows.length)
         return directRows;
       const fallbackRows = [];
       const seen = /* @__PURE__ */ new Set();
       for (const button of container.querySelectorAll("button")) {
-        if (!isRemoveButton(button))
+        if (!isRemoveButton(button, includeHidden))
           continue;
         const row = findRowFromButton(button, container);
         if (!row || seen.has(row))
@@ -442,8 +444,8 @@
       }
       return fallbackRows;
     }
-    function buildRowTarget(row) {
-      const removeButton = findRemoveButton(row);
+    function buildRowTarget(row, includeHidden = false) {
+      const removeButton = findRemoveButton(row, includeHidden);
       if (!removeButton)
         return null;
       return {
@@ -453,11 +455,13 @@
         key: getUserKey(row)
       };
     }
-    function findRemoveButton(scope) {
-      return Array.from(scope.querySelectorAll("button")).find((button) => isRemoveButton(button)) || null;
+    function findRemoveButton(scope, includeHidden = false) {
+      return Array.from(scope.querySelectorAll("button")).find((button) => isRemoveButton(button, includeHidden)) || null;
     }
-    function isRemoveButton(button) {
-      if (!button || !isVisible(button))
+    function isRemoveButton(button, includeHidden = false) {
+      if (!button)
+        return false;
+      if (!includeHidden && !isVisible(button))
         return false;
       const text = normalizeText(button.innerText || button.textContent || "");
       return text.includes("\u79FB\u9664");
@@ -466,8 +470,7 @@
       let node = button;
       while (node && node !== container && node !== document.body) {
         if (node.nodeType === 1) {
-          const hasUserAnchor = Array.from(node.querySelectorAll('a[href*="/user/"]')).some((anchor) => normalizeText(anchor.innerText || "").length > 0);
-          if (hasUserAnchor)
+          if (node.querySelector('a[href*="/user/"]'))
             return node;
         }
         node = node.parentElement;
@@ -520,6 +523,10 @@
         behavior: "auto"
       });
       return true;
+    }
+    function hasNoMoreText(context) {
+      const text = normalizeText(`${context.container.innerText || ""} ${context.footer.innerText || ""}`);
+      return text.includes("\u6682\u65F6\u6CA1\u6709\u66F4\u591A\u4E86");
     }
     function isRowVisible(row, viewportRect) {
       if (!isVisible(row))

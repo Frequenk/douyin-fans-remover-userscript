@@ -331,9 +331,10 @@
                 return;
             }
 
+            const reachedEnd = hasNoMoreText(context);
             const loadedTargets = getLoadedTargets(context);
             if (!loadedTargets.length) {
-                const moved = pushScrollContainerToBottom(context.scrollContainer);
+                const moved = reachedEnd ? false : pushScrollContainerToBottom(context.scrollContainer);
                 setStatus(moved ? '当前没有已加载的粉丝项，触发一次触底' : '当前没有可处理的粉丝项');
                 scheduleNext(moved ? BOTTOM_SCROLL_SETTLE_DELAY_MS : 1000);
                 return;
@@ -341,7 +342,7 @@
 
             const visibleTargets = getVisibleTargets(context);
             if (!visibleTargets.length) {
-                setStatus('当前没有可处理的粉丝项');
+                setStatus(reachedEnd ? '已到列表底部，当前没有可处理的粉丝项' : '当前没有可处理的粉丝项');
                 scheduleNext(1000);
                 return;
             }
@@ -352,7 +353,7 @@
                 state.skipped += countNewSkippedKeys(visibleMutualTargets.map((target) => target.key).filter(Boolean));
             }
 
-            if (loadedRemovableCount < AUTO_SCROLL_THRESHOLD) {
+            if (!reachedEnd && loadedRemovableCount < AUTO_SCROLL_THRESHOLD) {
                 const moved = pushScrollContainerToBottom(context.scrollContainer);
                 if (moved) {
                     setStatus(`当前已加载的非互关目标少于 ${AUTO_SCROLL_THRESHOLD} 个，触发一次触底`);
@@ -364,7 +365,7 @@
             const removedNames = [];
             const batchSize = clampBatchSize(state.settings.batchSize);
             let lastFailure = null;
-            const batchTargets = getBatchRemovableTargets(getVisibleTargets(context), batchSize);
+            const batchTargets = getBatchRemovableTargets(visibleTargets, batchSize);
             if (batchTargets.length > 0) {
                 const batchResult = await removeTargetsSimultaneously(batchTargets);
                 if (batchResult.removedNames.length > 0) {
@@ -416,6 +417,7 @@
         const scrollContainer = findScrollContainer(container);
         return {
             container,
+            footer,
             scrollContainer,
         };
     }
@@ -432,9 +434,9 @@
             .sort((a, b) => a.row.getBoundingClientRect().top - b.row.getBoundingClientRect().top);
     }
 
-    function getLoadedTargets(context) {
-        return getRows(context.container)
-            .map((row) => buildRowTarget(row))
+    function getLoadedTargets(context, includeHidden = false) {
+        return getRows(context.container, includeHidden)
+            .map((row) => buildRowTarget(row, includeHidden))
             .filter(Boolean);
     }
 
@@ -448,15 +450,15 @@
             .slice(0, batchSize);
     }
 
-    function getRows(container) {
+    function getRows(container, includeHidden = false) {
         const directRows = Array.from(container.querySelectorAll('.i5U4dMnB'))
-            .filter((row) => findRemoveButton(row));
+            .filter((row) => findRemoveButton(row, includeHidden));
         if (directRows.length) return directRows;
 
         const fallbackRows = [];
         const seen = new Set();
         for (const button of container.querySelectorAll('button')) {
-            if (!isRemoveButton(button)) continue;
+            if (!isRemoveButton(button, includeHidden)) continue;
             const row = findRowFromButton(button, container);
             if (!row || seen.has(row)) continue;
             seen.add(row);
@@ -465,8 +467,8 @@
         return fallbackRows;
     }
 
-    function buildRowTarget(row) {
-        const removeButton = findRemoveButton(row);
+    function buildRowTarget(row, includeHidden = false) {
+        const removeButton = findRemoveButton(row, includeHidden);
         if (!removeButton) return null;
         return {
             row,
@@ -476,12 +478,13 @@
         };
     }
 
-    function findRemoveButton(scope) {
-        return Array.from(scope.querySelectorAll('button')).find((button) => isRemoveButton(button)) || null;
+    function findRemoveButton(scope, includeHidden = false) {
+        return Array.from(scope.querySelectorAll('button')).find((button) => isRemoveButton(button, includeHidden)) || null;
     }
 
-    function isRemoveButton(button) {
-        if (!button || !isVisible(button)) return false;
+    function isRemoveButton(button, includeHidden = false) {
+        if (!button) return false;
+        if (!includeHidden && !isVisible(button)) return false;
         const text = normalizeText(button.innerText || button.textContent || '');
         return text.includes('移除');
     }
@@ -490,9 +493,7 @@
         let node = button;
         while (node && node !== container && node !== document.body) {
             if (node.nodeType === 1) {
-                const hasUserAnchor = Array.from(node.querySelectorAll('a[href*="/user/"]'))
-                    .some((anchor) => normalizeText(anchor.innerText || '').length > 0);
-                if (hasUserAnchor) return node;
+                if (node.querySelector('a[href*="/user/"]')) return node;
             }
             node = node.parentElement;
         }
@@ -548,6 +549,11 @@
             behavior: 'auto',
         });
         return true;
+    }
+
+    function hasNoMoreText(context) {
+        const text = normalizeText(`${context.container.innerText || ''} ${context.footer.innerText || ''}`);
+        return text.includes('暂时没有更多了');
     }
 
     function isRowVisible(row, viewportRect) {
